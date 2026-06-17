@@ -38,19 +38,19 @@ Add the card to any dashboard view:
 
 ```yaml
 type: custom:dialmatrix-card
-title: Call Routing Matrix   # optional, defaults to "Call Routing Matrix"
+title: Call Routing Matrix # optional, defaults to "Call Routing Matrix"
 ```
 
 ## Switch entity requirements
 
 The card discovers switches automatically. Each switch entity must expose the following attributes:
 
-| Attribute | Type | Description |
-|---|---|---|
-| `doorbell_id` | string | Unique identifier for the doorbell (row) |
-| `doorbell_name` | string | Display name for the doorbell |
-| `target_id` | string | Unique identifier for the notification target (column) |
-| `target_name` | string | Display name for the notification target |
+| Attribute       | Type   | Description                                            |
+| --------------- | ------ | ------------------------------------------------------ |
+| `doorbell_id`   | string | Unique identifier for the doorbell (row)               |
+| `doorbell_name` | string | Display name for the doorbell                          |
+| `target_id`     | string | Unique identifier for the notification target (column) |
+| `target_name`   | string | Display name for the notification target               |
 
 The `state` of the switch (`on` / `off`) determines whether that doorbell → target route is active.
 
