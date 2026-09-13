@@ -5,9 +5,10 @@
  * Rows are event sources: doorbells, and Frigate camera detections
  * (person, car, …). Columns are notification targets.
  *
- * The pencil button opens an inline editor for doorbells, cameras, targets
- * and Frigate settings. Saving stores the configuration in the Dial Matrix
- * integration, which reloads and (re)creates the switch entities.
+ * The routing configuration (doorbells, cameras, targets, Frigate settings)
+ * is edited in the card's configuration dialog (dashboard edit mode → edit
+ * card). Saving there writes to the Dial Matrix integration over websocket;
+ * the integration reloads and (re)creates the switch entities.
  *
  * Installation: add to Lovelace resources as a JavaScript module.
  * Usage:
@@ -15,7 +16,7 @@
  *   title: "Call Routing Matrix"     # optional
  *   event_types: [doorbell, person]  # optional filter; default: all
  *   group_rows: true                 # optional; group rows by event type
- *   editable: true                   # optional; show the edit button
+ *   editable: false                  # optional; also show a pencil on the card
  *   type_labels:                     # optional overrides for group headers
  *     person: "People"
  *   type_icons:                      # optional overrides for group icons
@@ -61,253 +62,213 @@ const OPTIONAL_TEXT = new Set([
   'tts_media_player',
 ]);
 
-class DialMatrixCard extends HTMLElement {
+const escapeHtml = (str) =>
+  String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const titleCase = (str) => {
+  const s = String(str).replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+
+const errText = (err) => (err && (err.message || err.code)) || String(err);
+
+// Shared form styling (HA theme variables)
+const FORM_STYLES = `
+  :host { display: block; color: var(--primary-text-color); }
+  section { margin-bottom: 18px; }
+  h3 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+    font-size: 0.8em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--secondary-text-color);
+  }
+  h3 ha-icon { --mdc-icon-size: 16px; color: var(--primary-color, #03a9f4); }
+  h3 .add { margin-left: auto; }
+  .item {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--divider-color, #e0e0e0);
+    border-radius: 8px;
+    background: var(--secondary-background-color, rgba(127,127,127,0.06));
+  }
+  .fields {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    min-width: 0;
+  }
+  .f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .f.wide, details.wide { grid-column: 1 / -1; }
+  .f > span { font-size: 0.72em; color: var(--secondary-text-color); }
+  .f input[type="text"], .f textarea {
+    font: inherit;
+    font-size: 0.9em;
+    padding: 6px 8px;
+    border: 1px solid var(--divider-color, #bdbdbd);
+    border-radius: 6px;
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .f textarea { resize: vertical; font-family: monospace; font-size: 0.82em; }
+  .f input:focus, .f textarea:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
+  .f textarea.invalid { border-color: var(--error-color, #db4437); }
+  .f.check { flex-direction: row; align-items: center; gap: 8px; }
+  .f.check > span { font-size: 0.9em; color: var(--primary-text-color); }
+  details { font-size: 0.9em; }
+  summary { cursor: pointer; color: var(--primary-color, #03a9f4); font-size: 0.85em; margin: 2px 0 6px; }
+  .hint { font-size: 0.78em; color: var(--secondary-text-color); margin: 4px 0; }
+  code {
+    background: var(--code-editor-background-color, rgba(127,127,127,0.15));
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.95em;
+  }
+  .error { color: var(--error-color, #db4437); font-size: 0.85em; margin: 8px 0; }
+  .ok { color: var(--success-color, #4caf50); font-size: 0.85em; margin: 8px 0; }
+  button.add, .actions button {
+    font: inherit;
+    font-size: 0.85em;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--primary-color, #03a9f4);
+    background: transparent;
+    color: var(--primary-color, #03a9f4);
+    cursor: pointer;
+  }
+  .actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .actions .primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+  .actions .secondary { border-color: var(--divider-color, #bdbdbd); color: var(--secondary-text-color); }
+  .actions button[disabled] { opacity: 0.6; cursor: default; }
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--secondary-text-color);
+    cursor: pointer;
+    flex: none;
+  }
+  .icon-btn:hover { background: rgba(127,127,127,0.15); color: var(--primary-text-color); }
+  .icon-btn.danger:hover { color: var(--error-color, #db4437); }
+  .icon-btn ha-icon { --mdc-icon-size: 20px; }
+`;
+
+// =============================================================================
+// Routing editor — the form for doorbells / cameras / targets / Frigate.
+// Loads from and saves to the integration over websocket. Used by the card
+// configuration dialog and (optionally) inline in the card.
+// =============================================================================
+
+class DialMatrixRoutingEditor extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._config = {};
     this._hass = null;
-    this._renderedStateHash = null;
-
-    // Editor state
-    this._editing = false;
     this._draft = null;
     this._defaults = FALLBACK_DEFAULTS;
-    this._editorError = '';
+    this._error = '';
+    this._notice = '';
     this._saving = false;
+    this._loaded = false;
     this._jsonErrors = new Set();
   }
 
-  /**
-   * Called by Lovelace when the card config is set/updated.
-   */
-  setConfig(config) {
-    if (config.event_types !== undefined && !Array.isArray(config.event_types)) {
-      throw new Error('dialmatrix-card: `event_types` must be a list');
-    }
-    this._config = {
-      group_rows: true,
-      editable: true,
-      type_labels: {},
-      type_icons: {},
-      ...config,
-    };
-    this._renderedStateHash = null;
-    this._render();
-  }
-
-  /**
-   * Called by Lovelace whenever any entity state changes.
-   * Only re-renders when matrix switches actually changed, and never while
-   * the editor is open (that would wipe what the user is typing).
-   */
   set hass(hass) {
     this._hass = hass;
-    if (this._editing) return;
-
-    // Build a lightweight hash of only the matrix switch states
-    const hash = this._getMatrixSwitches()
-      .map((s) => `${s.entity_id}:${s.state}`)
-      .sort()
-      .join('|');
-
-    if (hash !== this._renderedStateHash) {
-      this._renderedStateHash = hash;
-      this._render();
-    }
+    if (!this._loaded && hass) this.load();
   }
 
-  // ---------------------------------------------------------------------------
-  // Matrix helpers
-  // ---------------------------------------------------------------------------
-
-  static _isMatrixSwitch(s) {
-    const a = s.attributes;
-    return (
-      a.target_id !== undefined &&
-      (a.source_id !== undefined || a.doorbell_id !== undefined)
-    );
+  get hass() {
+    return this._hass;
   }
 
-  /**
-   * Normalise a switch state object. Supports both the current attribute set
-   * (source_id / event_type) and the legacy doorbell-only set (doorbell_id).
-   */
-  static _normalise(s) {
-    const a = s.attributes;
-    const eventType = a.event_type || 'doorbell';
-    return {
-      entityId: s.entity_id,
-      on: s.state === 'on',
-      eventType,
-      sourceId: a.source_id !== undefined ? a.source_id : a.doorbell_id,
-      sourceName:
-        a.source_name !== undefined ? a.source_name : a.doorbell_name || a.doorbell_id,
-      targetId: a.target_id,
-      targetName: a.target_name !== undefined ? a.target_name : a.target_id,
-      order: Array.isArray(a.sort_order) ? a.sort_order : null,
-    };
+  connectedCallback() {
+    if (!this._loaded && this._hass) this.load();
+    else this._render();
   }
 
-  _getMatrixSwitches() {
-    if (!this._hass) return [];
-    let switches = Object.values(this._hass.states).filter(
-      DialMatrixCard._isMatrixSwitch,
-    );
-    const filter = this._config.event_types;
-    if (Array.isArray(filter) && filter.length > 0) {
-      const allowed = new Set(filter.map(String));
-      switches = switches.filter((s) =>
-        allowed.has(String(s.attributes.event_type || 'doorbell')),
-      );
-    }
-    return switches;
-  }
-
-  _typeMeta(type) {
-    const base = TYPE_META[type] || {
-      label: `${DialMatrixCard._titleCase(type)} detected`,
-      icon: DEFAULT_TYPE_ICON,
-      order: 100,
-    };
-    return {
-      label: this._config.type_labels[type] || base.label,
-      icon: this._config.type_icons[type] || base.icon,
-      order: base.order,
-    };
-  }
-
-  static _titleCase(str) {
-    const s = String(str).replace(/_/g, ' ');
-    return s.charAt(0).toUpperCase() + s.slice(1);
-  }
-
-  static _compareOrder(a, b) {
-    // Prefer explicit sort_order from the integration; otherwise keep order.
-    if (a.order && b.order) {
-      const n = Math.max(a.order.length, b.order.length);
-      for (let i = 0; i < n; i++) {
-        const d = (a.order[i] ?? 0) - (b.order[i] ?? 0);
-        if (d !== 0) return d;
-      }
-    }
-    return 0;
-  }
-
-  /**
-   * Build the matrix model:
-   *   groups:  [{ type, label, icon, rows: [{ key, id, name }] }]
-   *   targets: [{ id, name }]
-   *   cells:   Map<`${rowKey}|${targetId}`, { entityId, on }>
-   */
-  _buildMatrix(switches) {
-    const items = switches.map(DialMatrixCard._normalise);
-    items.sort(DialMatrixCard._compareOrder);
-
-    const groupMap = new Map();
-    const targetMap = new Map();
-    const cells = new Map();
-
-    for (const it of items) {
-      const rowKey = `${it.eventType}::${it.sourceId}`;
-      if (!groupMap.has(it.eventType)) {
-        groupMap.set(it.eventType, {
-          type: it.eventType,
-          ...this._typeMeta(it.eventType),
-          rows: new Map(),
-        });
-      }
-      const group = groupMap.get(it.eventType);
-      if (!group.rows.has(rowKey)) {
-        group.rows.set(rowKey, { key: rowKey, id: it.sourceId, name: it.sourceName });
-      }
-      if (!targetMap.has(it.targetId)) targetMap.set(it.targetId, it.targetName);
-      cells.set(`${rowKey}|${it.targetId}`, { entityId: it.entityId, on: it.on });
-    }
-
-    const groups = [...groupMap.values()]
-      .sort((a, b) => a.order - b.order)
-      .map((g) => ({ ...g, rows: [...g.rows.values()] }));
-
-    return {
-      groups,
-      targets: [...targetMap.entries()].map(([id, name]) => ({ id, name })),
-      cells,
-    };
-  }
-
-  _toggle(entityId) {
-    this._hass.callService('homeassistant', 'toggle', {
-      entity_id: entityId,
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Editor state
-  // ---------------------------------------------------------------------------
-
-  async _openEditor() {
+  async load() {
+    this._loaded = true; // prevent concurrent loads
+    this._error = '';
+    this._notice = '';
     if (!this._hass || typeof this._hass.callWS !== 'function') {
-      this._editorError = 'This Home Assistant version does not support the editor.';
+      this._error = 'This Home Assistant version does not support the editor.';
       this._render();
       return;
     }
-    this._editorError = '';
     try {
       const res = await this._hass.callWS({ type: 'dialmatrix/config' });
       this._defaults = { ...FALLBACK_DEFAULTS, ...(res.defaults || {}) };
-      this._draft = DialMatrixCard._toDraft(res.config || {}, this._defaults);
+      this._draft = DialMatrixRoutingEditor.toDraft(res.config || {}, this._defaults);
+      if (res.configured === false) {
+        this._notice =
+          'The Dial Matrix integration has no configuration yet. Fill in the form and save to create it.';
+      }
     } catch (err) {
-      this._editorError =
+      this._draft = null;
+      this._error =
         'Could not load the Dial Matrix configuration. Is the Dial Matrix integration installed and up to date? ' +
-        `(${(err && (err.message || err.code)) || err})`;
-      this._render();
-      return;
+        `(${errText(err)})`;
     }
-    this._editing = true;
     this._jsonErrors = new Set();
     this._render();
   }
 
-  _closeEditor() {
-    this._editing = false;
-    this._draft = null;
-    this._editorError = '';
-    this._jsonErrors = new Set();
-    this._renderedStateHash = null;
-    this._render();
-  }
-
-  async _save() {
+  async save() {
+    if (!this._draft) return;
     if (this._jsonErrors.size > 0) {
-      this._editorError = 'Fix the invalid JSON in "Extra push data" first.';
+      this._error = 'Fix the invalid JSON in "Extra push data" first.';
       this._render();
       return;
     }
     let config;
     try {
-      config = DialMatrixCard._fromDraft(this._draft);
+      config = DialMatrixRoutingEditor.fromDraft(this._draft);
     } catch (err) {
-      this._editorError = err.message;
+      this._error = err.message;
       this._render();
       return;
     }
     this._saving = true;
-    this._editorError = '';
+    this._error = '';
+    this._notice = '';
     this._render();
     try {
-      await this._hass.callWS({ type: 'dialmatrix/config/save', config });
+      const res = await this._hass.callWS({ type: 'dialmatrix/config/save', config });
       this._saving = false;
-      this._closeEditor();
+      this._draft = DialMatrixRoutingEditor.toDraft(res.config || config, this._defaults);
+      this._notice = 'Saved. The integration is reloading; the matrix updates in a moment.';
+      this._render();
+      this.dispatchEvent(new CustomEvent('dialmatrix-saved', { bubbles: true, composed: true }));
     } catch (err) {
       this._saving = false;
-      this._editorError = `Save failed: ${(err && (err.message || err.code)) || err}`;
+      this._error = `Save failed: ${errText(err)}`;
       this._render();
     }
   }
 
   /** Stored config → editor draft (strings everywhere the UI needs them). */
-  static _toDraft(config, defaults) {
+  static toDraft(config, defaults) {
     const camDefaults = defaults.camera || FALLBACK_DEFAULTS.camera;
     const tgtDefaults = defaults.target || FALLBACK_DEFAULTS.target;
     const frDefaults = defaults.frigate || FALLBACK_DEFAULTS.frigate;
@@ -357,7 +318,7 @@ class DialMatrixCard extends HTMLElement {
   }
 
   /** Editor draft → config for the integration. Throws on user errors. */
-  static _fromDraft(draft) {
+  static fromDraft(draft) {
     const clean = (item) => {
       const out = {};
       for (const [k, v] of Object.entries(item)) {
@@ -372,10 +333,10 @@ class DialMatrixCard extends HTMLElement {
         const id = String(it.id || '').trim();
         if (!id) throw new Error(`Every ${what} needs an ID.`);
         if (!/^[a-z0-9_]+$/.test(id))
-          throw new Error(`${DialMatrixCard._titleCase(what)} ID "${id}" may only contain a-z, 0-9 and _.`);
+          throw new Error(`${titleCase(what)} ID "${id}" may only contain a-z, 0-9 and _.`);
         if (seen.has(id)) throw new Error(`Duplicate ${what} ID "${id}".`);
         seen.add(id);
-        if (!String(it.name || '').trim()) throw new Error(`${DialMatrixCard._titleCase(what)} "${id}" needs a name.`);
+        if (!String(it.name || '').trim()) throw new Error(`${titleCase(what)} "${id}" needs a name.`);
       }
     };
     checkIds(draft.doorbells, 'doorbell');
@@ -412,7 +373,7 @@ class DialMatrixCard extends HTMLElement {
     obj[parts[parts.length - 1]] = value;
   }
 
-  _onEditorInput(el) {
+  _onInput(el) {
     const path = el.dataset.path;
     const kind = el.dataset.kind || 'text';
     if (kind === 'bool') {
@@ -445,7 +406,7 @@ class DialMatrixCard extends HTMLElement {
     }
   }
 
-  _onEditorAction(el) {
+  _onAction(el) {
     const action = el.dataset.action;
     const d = this._draft;
     if (action === 'add-doorbell') {
@@ -468,142 +429,34 @@ class DialMatrixCard extends HTMLElement {
       const [list, idx] = el.dataset.path.split('.');
       d[list].splice(Number(idx), 1);
     } else if (action === 'save') {
-      this._save();
+      this.save();
       return;
-    } else if (action === 'cancel') {
-      this._closeEditor();
+    } else if (action === 'reload') {
+      this._loaded = false;
+      this.load();
       return;
-    } else if (action === 'refresh-zones') {
-      // labels changed: re-render so the zone fields follow
+    } else if (action === 'retry') {
+      this._loaded = false;
+      this.load();
+      return;
     }
     this._render();
   }
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-
   _render() {
     if (!this.shadowRoot) return;
+    const esc = escapeHtml;
 
-    const title = this._config.title || DEFAULT_TITLE;
-    const switches = this._getMatrixSwitches();
-    const { groups, targets, cells } = this._buildMatrix(switches);
-    const groupRows = this._config.group_rows !== false;
-    const rowCount = groups.reduce((n, g) => n + g.rows.length, 0);
-
-    const colTemplate =
-      targets.length > 0
-        ? `auto ${Array(targets.length).fill('minmax(44px, 1fr)').join(' ')}`
-        : 'auto';
-
-    // Header row
-    let html = `<div class="cell corner"></div>`;
-    for (const t of targets) {
-      html += `<div class="cell th"><span class="th-text">${this._escape(t.name)}</span></div>`;
+    if (!this._draft) {
+      this.shadowRoot.innerHTML = `
+        <style>${FORM_STYLES}</style>
+        ${this._error ? `<p class="error">${esc(this._error)}</p><div class="actions"><button class="secondary" data-action="retry">Retry</button></div>` : `<p class="hint">Loading…</p>`}
+      `;
+      this._bind();
+      return;
     }
 
-    // Data rows, grouped by event type
-    for (const g of groups) {
-      if (groupRows) {
-        html += `
-          <div class="cell group">
-            <ha-icon class="group-icon" icon="${this._escape(g.icon)}"></ha-icon>
-            <span class="group-text">${this._escape(g.label)}</span>
-          </div>`;
-      }
-      for (const row of g.rows) {
-        const rowLabel =
-          groupRows || g.type === 'doorbell'
-            ? this._escape(row.name)
-            : `<ha-icon class="row-icon" icon="${this._escape(g.icon)}"></ha-icon>${this._escape(row.name)}`;
-        const rowTitle =
-          g.type === 'doorbell'
-            ? row.name
-            : `${row.name} · ${DialMatrixCard._titleCase(g.type)}`;
-        html += `<div class="cell rh" title="${this._escape(rowTitle)}">${rowLabel}</div>`;
-
-        for (const t of targets) {
-          const cell = cells.get(`${row.key}|${t.id}`);
-          if (cell) {
-            const { on, entityId } = cell;
-            html += `
-              <div class="cell">
-                <button
-                  class="btn ${on ? 'on' : 'off'}"
-                  data-entity="${this._escape(entityId)}"
-                  title="${this._escape(rowTitle)} → ${this._escape(t.name)}: ${on ? 'enabled' : 'disabled'}"
-                  aria-pressed="${on}"
-                  aria-label="${this._escape(rowTitle)} to ${this._escape(t.name)}"
-                >${on ? '✓' : '✗'}</button>
-              </div>`;
-          } else {
-            html += `<div class="cell"><span class="missing">–</span></div>`;
-          }
-        }
-      }
-    }
-
-    const emptyState =
-      rowCount === 0 && !this._editing
-        ? `<p class="empty">No routing rows yet. ${
-            this._config.editable !== false
-              ? 'Use the pencil button to add doorbells, cameras and targets.'
-              : 'Add doorbells, cameras and targets under <code>Settings → Devices &amp; services → Dial Matrix → Configure</code>.'
-          }</p>`
-        : '';
-
-    const editButton =
-      this._config.editable !== false
-        ? `<button class="icon-btn" data-action="${this._editing ? 'cancel' : 'open'}" title="${this._editing ? 'Close editor' : 'Edit routing configuration'}" aria-label="${this._editing ? 'Close editor' : 'Edit routing configuration'}">
-             <ha-icon icon="${this._editing ? 'mdi:close' : 'mdi:pencil'}"></ha-icon>
-           </button>`
-        : '';
-
-    const errorBanner =
-      this._editorError && !this._editing
-        ? `<p class="error">${this._escape(this._editorError)}</p>`
-        : '';
-
-    this.shadowRoot.innerHTML = `
-      <style>${DialMatrixCard._styles(colTemplate)}</style>
-      <ha-card>
-        <div class="card-content">
-          <div class="header">
-            <h2>${this._escape(title)}</h2>
-            ${editButton}
-          </div>
-          ${errorBanner}
-          ${emptyState}
-          ${rowCount > 0 ? `<div class="grid">${html}</div>` : ''}
-          ${this._editing ? this._renderEditor() : ''}
-        </div>
-      </ha-card>
-    `;
-
-    // Attach handlers after DOM is set
-    this.shadowRoot.querySelectorAll('.btn[data-entity]').forEach((btn) => {
-      btn.addEventListener('click', () => this._toggle(btn.dataset.entity));
-    });
-    this.shadowRoot.querySelectorAll('[data-action]').forEach((el) => {
-      el.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        if (el.dataset.action === 'open') this._openEditor();
-        else this._onEditorAction(el);
-      });
-    });
-    this.shadowRoot.querySelectorAll('[data-path]:not([data-action])').forEach((el) => {
-      const evt = el.dataset.kind === 'bool' ? 'change' : 'input';
-      el.addEventListener(evt, () => this._onEditorInput(el));
-      if (el.dataset.kind === 'list' && el.dataset.rerender === 'true') {
-        el.addEventListener('change', () => this._render());
-      }
-    });
-  }
-
-  _renderEditor() {
     const d = this._draft;
-    const esc = (v) => this._escape(v == null ? '' : v);
     const text = (path, label, value, opts = {}) => `
       <label class="f ${opts.wide ? 'wide' : ''}">
         <span>${esc(label)}</span>
@@ -706,8 +559,10 @@ class DialMatrixCard extends HTMLElement {
         </div>
       </div>`;
 
-    return `
+    this.shadowRoot.innerHTML = `
+      <style>${FORM_STYLES}</style>
       <div class="editor">
+        ${this._notice ? `<p class="ok">${esc(this._notice)}</p>` : ''}
         <section>
           <h3><ha-icon icon="mdi:doorbell"></ha-icon> Doorbells
             <button class="add" data-action="add-doorbell">+ Add</button></h3>
@@ -728,12 +583,423 @@ class DialMatrixCard extends HTMLElement {
           <h3><ha-icon icon="mdi:cog"></ha-icon> Frigate settings</h3>
           ${frigate}
         </section>
-        ${this._editorError ? `<p class="error">${esc(this._editorError)}</p>` : ''}
+        ${this._error ? `<p class="error">${esc(this._error)}</p>` : ''}
         <div class="actions">
-          <button class="secondary" data-action="cancel" ${this._saving ? 'disabled' : ''}>Cancel</button>
-          <button class="primary" data-action="save" ${this._saving ? 'disabled' : ''}>${this._saving ? 'Saving…' : 'Save'}</button>
+          <span class="hint">Routing is saved to the integration directly, independent of the dashboard.</span>
+          <button class="secondary" data-action="reload" ${this._saving ? 'disabled' : ''}>Discard changes</button>
+          <button class="primary" data-action="save" ${this._saving ? 'disabled' : ''}>${this._saving ? 'Saving…' : 'Save routing'}</button>
         </div>
       </div>`;
+    this._bind();
+  }
+
+  _bind() {
+    this.shadowRoot.querySelectorAll('[data-action]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        this._onAction(el);
+      });
+    });
+    this.shadowRoot.querySelectorAll('[data-path]:not([data-action])').forEach((el) => {
+      const evt = el.dataset.kind === 'bool' ? 'change' : 'input';
+      el.addEventListener(evt, () => this._onInput(el));
+      if (el.dataset.rerender === 'true') {
+        el.addEventListener('change', () => this._render());
+      }
+    });
+  }
+}
+
+// =============================================================================
+// Card configuration editor — shown in the dashboard's "edit card" dialog.
+// Card display options on top, the routing editor below.
+// =============================================================================
+
+class DialMatrixCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._config = {};
+    this._hass = null;
+    this._routing = null;
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._routing) this._routing.hass = hass;
+  }
+
+  _fireChange() {
+    this.dispatchEvent(
+      new CustomEvent('config-changed', {
+        detail: { config: this._config },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  _onOption(el) {
+    const key = el.dataset.option;
+    const kind = el.dataset.kind || 'text';
+    const cfg = { ...this._config };
+    if (kind === 'bool') {
+      cfg[key] = !!el.checked;
+      // group_rows / editable defaults: drop the key when it equals the default
+      if ((key === 'group_rows' && cfg[key] === true) || (key === 'editable' && cfg[key] === false)) delete cfg[key];
+    } else if (kind === 'list') {
+      const list = el.value.split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length) cfg[key] = list;
+      else delete cfg[key];
+    } else {
+      const v = el.value.trim();
+      if (v) cfg[key] = v;
+      else delete cfg[key];
+    }
+    this._config = cfg;
+    this._fireChange();
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    const c = this._config;
+    const esc = escapeHtml;
+    this.shadowRoot.innerHTML = `
+      <style>
+        ${FORM_STYLES}
+        .card-options { margin-bottom: 18px; }
+        .routing-title { margin-top: 4px; }
+      </style>
+      <section class="card-options">
+        <h3><ha-icon icon="mdi:view-grid-outline"></ha-icon> Card</h3>
+        <div class="item">
+          <div class="fields">
+            <label class="f">
+              <span>Title</span>
+              <input type="text" data-option="title" value="${esc(c.title || '')}" placeholder="${esc(DEFAULT_TITLE)}">
+            </label>
+            <label class="f">
+              <span>Show only event types (comma separated, empty = all)</span>
+              <input type="text" data-option="event_types" data-kind="list" value="${esc((c.event_types || []).join(', '))}" placeholder="doorbell, person, car">
+            </label>
+            <label class="f check">
+              <input type="checkbox" data-option="group_rows" data-kind="bool" ${c.group_rows !== false ? 'checked' : ''}>
+              <span>Group rows by event type</span>
+            </label>
+            <label class="f check">
+              <input type="checkbox" data-option="editable" data-kind="bool" ${c.editable === true ? 'checked' : ''}>
+              <span>Show a pencil button on the card for quick edits</span>
+            </label>
+          </div>
+        </div>
+      </section>
+      <section>
+        <h3 class="routing-title"><ha-icon icon="mdi:swap-horizontal"></ha-icon> Routing (doorbells, cameras, targets)</h3>
+        <dialmatrix-routing-editor></dialmatrix-routing-editor>
+      </section>
+    `;
+    this.shadowRoot.querySelectorAll('[data-option]').forEach((el) => {
+      const evt = el.dataset.kind === 'bool' ? 'change' : 'input';
+      el.addEventListener(evt, () => this._onOption(el));
+    });
+    this._routing = this.shadowRoot.querySelector('dialmatrix-routing-editor');
+    if (this._routing && this._hass) this._routing.hass = this._hass;
+  }
+}
+
+// =============================================================================
+// The card
+// =============================================================================
+
+class DialMatrixCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._config = {};
+    this._hass = null;
+    this._renderedStateHash = null;
+    this._editing = false;
+    this._routing = null;
+  }
+
+  static getConfigElement() {
+    return document.createElement('dialmatrix-card-editor');
+  }
+
+  /**
+   * Called by Lovelace when the card config is set/updated.
+   */
+  setConfig(config) {
+    if (config.event_types !== undefined && !Array.isArray(config.event_types)) {
+      throw new Error('dialmatrix-card: `event_types` must be a list');
+    }
+    this._config = {
+      group_rows: true,
+      editable: false,
+      type_labels: {},
+      type_icons: {},
+      ...config,
+    };
+    this._renderedStateHash = null;
+    this._render();
+  }
+
+  /**
+   * Called by Lovelace whenever any entity state changes.
+   * Only re-renders when matrix switches actually changed, and never while
+   * the inline editor is open (that would wipe what the user is typing).
+   */
+  set hass(hass) {
+    this._hass = hass;
+    if (this._editing) {
+      if (this._routing) this._routing.hass = hass;
+      return;
+    }
+
+    // Build a lightweight hash of only the matrix switch states
+    const hash = this._getMatrixSwitches()
+      .map((s) => `${s.entity_id}:${s.state}`)
+      .sort()
+      .join('|');
+
+    if (hash !== this._renderedStateHash) {
+      this._renderedStateHash = hash;
+      this._render();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Matrix helpers
+  // ---------------------------------------------------------------------------
+
+  static _isMatrixSwitch(s) {
+    const a = s.attributes;
+    return (
+      a.target_id !== undefined &&
+      (a.source_id !== undefined || a.doorbell_id !== undefined)
+    );
+  }
+
+  /**
+   * Normalise a switch state object. Supports both the current attribute set
+   * (source_id / event_type) and the legacy doorbell-only set (doorbell_id).
+   */
+  static _normalise(s) {
+    const a = s.attributes;
+    const eventType = a.event_type || 'doorbell';
+    return {
+      entityId: s.entity_id,
+      on: s.state === 'on',
+      eventType,
+      sourceId: a.source_id !== undefined ? a.source_id : a.doorbell_id,
+      sourceName:
+        a.source_name !== undefined ? a.source_name : a.doorbell_name || a.doorbell_id,
+      targetId: a.target_id,
+      targetName: a.target_name !== undefined ? a.target_name : a.target_id,
+      order: Array.isArray(a.sort_order) ? a.sort_order : null,
+    };
+  }
+
+  _getMatrixSwitches() {
+    if (!this._hass) return [];
+    let switches = Object.values(this._hass.states).filter(
+      DialMatrixCard._isMatrixSwitch,
+    );
+    const filter = this._config.event_types;
+    if (Array.isArray(filter) && filter.length > 0) {
+      const allowed = new Set(filter.map(String));
+      switches = switches.filter((s) =>
+        allowed.has(String(s.attributes.event_type || 'doorbell')),
+      );
+    }
+    return switches;
+  }
+
+  _typeMeta(type) {
+    const base = TYPE_META[type] || {
+      label: `${titleCase(type)} detected`,
+      icon: DEFAULT_TYPE_ICON,
+      order: 100,
+    };
+    return {
+      label: this._config.type_labels[type] || base.label,
+      icon: this._config.type_icons[type] || base.icon,
+      order: base.order,
+    };
+  }
+
+  static _compareOrder(a, b) {
+    // Prefer explicit sort_order from the integration; otherwise keep order.
+    if (a.order && b.order) {
+      const n = Math.max(a.order.length, b.order.length);
+      for (let i = 0; i < n; i++) {
+        const d = (a.order[i] ?? 0) - (b.order[i] ?? 0);
+        if (d !== 0) return d;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Build the matrix model:
+   *   groups:  [{ type, label, icon, rows: [{ key, id, name }] }]
+   *   targets: [{ id, name }]
+   *   cells:   Map<`${rowKey}|${targetId}`, { entityId, on }>
+   */
+  _buildMatrix(switches) {
+    const items = switches.map(DialMatrixCard._normalise);
+    items.sort(DialMatrixCard._compareOrder);
+
+    const groupMap = new Map();
+    const targetMap = new Map();
+    const cells = new Map();
+
+    for (const it of items) {
+      const rowKey = `${it.eventType}::${it.sourceId}`;
+      if (!groupMap.has(it.eventType)) {
+        groupMap.set(it.eventType, {
+          type: it.eventType,
+          ...this._typeMeta(it.eventType),
+          rows: new Map(),
+        });
+      }
+      const group = groupMap.get(it.eventType);
+      if (!group.rows.has(rowKey)) {
+        group.rows.set(rowKey, { key: rowKey, id: it.sourceId, name: it.sourceName });
+      }
+      if (!targetMap.has(it.targetId)) targetMap.set(it.targetId, it.targetName);
+      cells.set(`${rowKey}|${it.targetId}`, { entityId: it.entityId, on: it.on });
+    }
+
+    const groups = [...groupMap.values()]
+      .sort((a, b) => a.order - b.order)
+      .map((g) => ({ ...g, rows: [...g.rows.values()] }));
+
+    return {
+      groups,
+      targets: [...targetMap.entries()].map(([id, name]) => ({ id, name })),
+      cells,
+    };
+  }
+
+  _toggle(entityId) {
+    this._hass.callService('homeassistant', 'toggle', {
+      entity_id: entityId,
+    });
+  }
+
+  _setEditing(on) {
+    this._editing = on;
+    this._renderedStateHash = null;
+    this._render();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  _render() {
+    if (!this.shadowRoot) return;
+
+    const title = this._config.title || DEFAULT_TITLE;
+    const switches = this._getMatrixSwitches();
+    const { groups, targets, cells } = this._buildMatrix(switches);
+    const groupRows = this._config.group_rows !== false;
+    const rowCount = groups.reduce((n, g) => n + g.rows.length, 0);
+
+    const colTemplate =
+      targets.length > 0
+        ? `auto ${Array(targets.length).fill('minmax(44px, 1fr)').join(' ')}`
+        : 'auto';
+
+    // Header row
+    let html = `<div class="cell corner"></div>`;
+    for (const t of targets) {
+      html += `<div class="cell th"><span class="th-text">${escapeHtml(t.name)}</span></div>`;
+    }
+
+    // Data rows, grouped by event type
+    for (const g of groups) {
+      if (groupRows) {
+        html += `
+          <div class="cell group">
+            <ha-icon class="group-icon" icon="${escapeHtml(g.icon)}"></ha-icon>
+            <span class="group-text">${escapeHtml(g.label)}</span>
+          </div>`;
+      }
+      for (const row of g.rows) {
+        const rowLabel =
+          groupRows || g.type === 'doorbell'
+            ? escapeHtml(row.name)
+            : `<ha-icon class="row-icon" icon="${escapeHtml(g.icon)}"></ha-icon>${escapeHtml(row.name)}`;
+        const rowTitle =
+          g.type === 'doorbell' ? row.name : `${row.name} · ${titleCase(g.type)}`;
+        html += `<div class="cell rh" title="${escapeHtml(rowTitle)}">${rowLabel}</div>`;
+
+        for (const t of targets) {
+          const cell = cells.get(`${row.key}|${t.id}`);
+          if (cell) {
+            const { on, entityId } = cell;
+            html += `
+              <div class="cell">
+                <button
+                  class="btn ${on ? 'on' : 'off'}"
+                  data-entity="${escapeHtml(entityId)}"
+                  title="${escapeHtml(rowTitle)} → ${escapeHtml(t.name)}: ${on ? 'enabled' : 'disabled'}"
+                  aria-pressed="${on}"
+                  aria-label="${escapeHtml(rowTitle)} to ${escapeHtml(t.name)}"
+                >${on ? '✓' : '✗'}</button>
+              </div>`;
+          } else {
+            html += `<div class="cell"><span class="missing">–</span></div>`;
+          }
+        }
+      }
+    }
+
+    const emptyState =
+      rowCount === 0 && !this._editing
+        ? `<p class="empty">No routing rows yet. Edit this card (dashboard edit mode) to add doorbells, cameras and targets.</p>`
+        : '';
+
+    const editButton = this._config.editable
+      ? `<button class="icon-btn" data-action="${this._editing ? 'close' : 'open'}" title="${this._editing ? 'Close editor' : 'Edit routing'}" aria-label="${this._editing ? 'Close editor' : 'Edit routing'}">
+           <ha-icon icon="${this._editing ? 'mdi:close' : 'mdi:pencil'}"></ha-icon>
+         </button>`
+      : '';
+
+    this.shadowRoot.innerHTML = `
+      <style>${DialMatrixCard._styles(colTemplate)}</style>
+      <ha-card>
+        <div class="card-content">
+          <div class="header">
+            <h2>${escapeHtml(title)}</h2>
+            ${editButton}
+          </div>
+          ${emptyState}
+          ${rowCount > 0 ? `<div class="grid">${html}</div>` : ''}
+          ${this._editing ? `<div class="inline-editor"><dialmatrix-routing-editor></dialmatrix-routing-editor></div>` : ''}
+        </div>
+      </ha-card>
+    `;
+
+    // Attach handlers after DOM is set
+    this.shadowRoot.querySelectorAll('.btn[data-entity]').forEach((btn) => {
+      btn.addEventListener('click', () => this._toggle(btn.dataset.entity));
+    });
+    this.shadowRoot.querySelectorAll('[data-action]').forEach((el) => {
+      el.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        this._setEditing(el.dataset.action === 'open');
+      });
+    });
+    this._routing = this.shadowRoot.querySelector('dialmatrix-routing-editor');
+    if (this._routing && this._hass) this._routing.hass = this._hass;
   }
 
   static _styles(colTemplate) {
@@ -861,19 +1127,7 @@ class DialMatrixCard extends HTMLElement {
           text-align: center;
           margin: 24px 0;
         }
-        code {
-          background: var(--code-editor-background-color, rgba(127,127,127,0.15));
-          padding: 1px 4px;
-          border-radius: 3px;
-          font-size: 0.95em;
-        }
-        .error {
-          color: var(--error-color, #db4437);
-          font-size: 0.85em;
-          margin: 8px 0;
-        }
 
-        /* Icon buttons (edit / close / remove) */
         .icon-btn {
           display: inline-flex;
           align-items: center;
@@ -888,100 +1142,14 @@ class DialMatrixCard extends HTMLElement {
           flex: none;
         }
         .icon-btn:hover { background: rgba(127,127,127,0.15); color: var(--primary-text-color); }
-        .icon-btn.danger:hover { color: var(--error-color, #db4437); }
         .icon-btn ha-icon { --mdc-icon-size: 20px; }
 
-        /* Editor */
-        .editor {
+        .inline-editor {
           margin-top: 16px;
           padding-top: 12px;
           border-top: 1px solid var(--divider-color, #e0e0e0);
         }
-        .editor section { margin-bottom: 18px; }
-        .editor h3 {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          margin: 0 0 8px;
-          font-size: 0.8em;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-          color: var(--secondary-text-color);
-        }
-        .editor h3 ha-icon { --mdc-icon-size: 16px; color: var(--primary-color, #03a9f4); }
-        .editor h3 .add { margin-left: auto; }
-        .item {
-          display: flex;
-          gap: 6px;
-          align-items: flex-start;
-          padding: 10px;
-          margin-bottom: 8px;
-          border: 1px solid var(--divider-color, #e0e0e0);
-          border-radius: 8px;
-          background: var(--secondary-background-color, rgba(127,127,127,0.06));
-        }
-        .fields {
-          flex: 1;
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-          gap: 8px;
-          min-width: 0;
-        }
-        .f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-        .f.wide, details.wide { grid-column: 1 / -1; }
-        .f > span {
-          font-size: 0.72em;
-          color: var(--secondary-text-color);
-        }
-        .f input[type="text"], .f textarea {
-          font: inherit;
-          font-size: 0.9em;
-          padding: 6px 8px;
-          border: 1px solid var(--divider-color, #bdbdbd);
-          border-radius: 6px;
-          background: var(--card-background-color, #fff);
-          color: var(--primary-text-color);
-          min-width: 0;
-          width: 100%;
-          box-sizing: border-box;
-        }
-        .f textarea { resize: vertical; font-family: monospace; font-size: 0.82em; }
-        .f input:focus, .f textarea:focus {
-          outline: none;
-          border-color: var(--primary-color, #03a9f4);
-        }
-        .f textarea.invalid { border-color: var(--error-color, #db4437); }
-        .f.check { flex-direction: row; align-items: center; gap: 8px; }
-        .f.check > span { font-size: 0.9em; color: var(--primary-text-color); }
-        details { font-size: 0.9em; }
-        summary { cursor: pointer; color: var(--primary-color, #03a9f4); font-size: 0.85em; margin: 2px 0 6px; }
-        .hint { font-size: 0.78em; color: var(--secondary-text-color); margin: 4px 0; }
-        .hint code { font-size: 0.95em; }
-
-        .editor button.add, .actions button {
-          font: inherit;
-          font-size: 0.85em;
-          padding: 6px 12px;
-          border-radius: 6px;
-          border: 1px solid var(--primary-color, #03a9f4);
-          background: transparent;
-          color: var(--primary-color, #03a9f4);
-          cursor: pointer;
-        }
-        .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-        .actions .primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
-        .actions .secondary { border-color: var(--divider-color, #bdbdbd); color: var(--secondary-text-color); }
-        .actions button[disabled] { opacity: 0.6; cursor: default; }
     `;
-  }
-
-  _escape(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   // Used by Lovelace to size the card in the grid
@@ -998,6 +1166,8 @@ class DialMatrixCard extends HTMLElement {
   }
 }
 
+customElements.define('dialmatrix-routing-editor', DialMatrixRoutingEditor);
+customElements.define('dialmatrix-card-editor', DialMatrixCardEditor);
 customElements.define('dialmatrix-card', DialMatrixCard);
 
 // Register with the Lovelace custom card registry
@@ -1006,6 +1176,6 @@ window.customCards.push({
   type: 'dialmatrix-card',
   name: 'Dial Matrix Card',
   description:
-    'Visual event-routing matrix: choose which targets are notified for each doorbell ring and Frigate person / car detection. Includes an inline editor for the routing configuration.',
+    'Visual event-routing matrix: choose which targets are notified for each doorbell ring and Frigate person / car detection. Routing is configured in the card editor.',
   preview: true,
 });

@@ -9,7 +9,7 @@ Companion card for the [Dial Matrix](https://github.com/NINE78/corte-dialmatrix)
 ## Features
 
 - Visual grid of event sources (rows) × notification targets (columns)
-- **Inline editor** (pencil button): add and edit doorbells, Frigate cameras, notification targets and Frigate settings right on the dashboard — no YAML, no integration dialogs
+- **Routing editor in the card's edit dialog**: add and edit doorbells, Frigate cameras, notification targets and Frigate settings where you edit the card — no YAML, no integration dialogs
 - Rows grouped by event type — **Doorbells**, **Person detected**, **Car detected** — with icons
 - One-tap toggle buttons — green ✓ for enabled, outlined ✗ for disabled
 - Automatically discovers the integration's switch entities; no entity lists to maintain
@@ -47,14 +47,18 @@ title: Call Routing Matrix # optional, defaults to "Call Routing Matrix"
 
 ### Editing the routing configuration
 
-Click the pencil in the card header. The editor has four sections:
+Open the dashboard's edit mode and edit the card. Below the card options the dialog shows the **Routing** editor with four sections:
 
 - **Doorbells** — ID, name and the MQTT topic that rings it (the payload is used as Frigate event id, so the push gets the snapshot).
 - **Cameras (Frigate)** — ID, name, Frigate camera name, the labels that get a row (person, car, …) and, per label, the zones an object must enter before anyone is notified.
 - **Notification targets** — ID, name and notify service. Expand *Messages, push extras and TTS* for the push titles/messages, extra push data (JSON such as `{"url": "/dashboard/gate", "ttl": 0, "priority": "high"}`) and TTS settings.
 - **Frigate settings** — listen to Frigate over MQTT, the topic, and the push image URL.
 
-**Save** validates the form, stores it in the Dial Matrix integration and reloads it; the grid updates within a second. **Cancel** discards the draft. Only admins can save. Message placeholders: `$icon`, `$doorbell_name`, `$camera_name`, `$label`, `$label_title`, `$sub_label`, `$zones`.
+**Save routing** validates the form and stores it in the Dial Matrix integration, which reloads; the preview and the grid update within a second. This is independent of the dialog's own Save button, which only stores the card options (title, filters). **Discard changes** reloads the form from the integration. Only admins can save.
+
+Message placeholders: `$icon`, `$doorbell_name`, `$camera_name`, `$label`, `$label_title`, `$sub_label`, `$zones`.
+
+Set `editable: true` to also get a pencil button on the card itself that opens the same editor inline, without entering dashboard edit mode.
 
 Requires the Dial Matrix integration to be added once under **Settings → Devices & services** (or imported from YAML); the card then does the rest.
 
@@ -63,7 +67,7 @@ Requires the Dial Matrix integration to be added once under **Settings → Devic
 | Option        | Default                | Description                                                                                          |
 | ------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `title`       | `Call Routing Matrix`  | Card title                                                                                           |
-| `editable`    | `true`                 | Show the pencil button that opens the inline editor                                                  |
+| `editable`    | `false`                | Also show a pencil button on the card that opens the routing editor inline                           |
 | `event_types` | all                    | Only show these event types, e.g. `[doorbell]` or `[person, car]`                                    |
 | `group_rows`  | `true`                 | Insert a header row per event type. When `false`, camera rows get an inline icon instead             |
 | `type_labels` | see below              | Override group header text per event type, e.g. `{ person: 'People', car: 'Vehicles' }`              |
