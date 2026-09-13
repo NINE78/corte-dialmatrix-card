@@ -9,6 +9,7 @@ Companion card for the [Dial Matrix](https://github.com/NINE78/corte-dialmatrix)
 ## Features
 
 - Visual grid of event sources (rows) × notification targets (columns)
+- **Inline editor** (pencil button): add and edit doorbells, Frigate cameras, notification targets and Frigate settings right on the dashboard — no YAML, no integration dialogs
 - Rows grouped by event type — **Doorbells**, **Person detected**, **Car detected** — with icons
 - One-tap toggle buttons — green ✓ for enabled, outlined ✗ for disabled
 - Automatically discovers the integration's switch entities; no entity lists to maintain
@@ -44,11 +45,25 @@ type: custom:dialmatrix-card
 title: Call Routing Matrix # optional, defaults to "Call Routing Matrix"
 ```
 
+### Editing the routing configuration
+
+Click the pencil in the card header. The editor has four sections:
+
+- **Doorbells** — ID, name and the MQTT topic that rings it (the payload is used as Frigate event id, so the push gets the snapshot).
+- **Cameras (Frigate)** — ID, name, Frigate camera name, the labels that get a row (person, car, …) and, per label, the zones an object must enter before anyone is notified.
+- **Notification targets** — ID, name and notify service. Expand *Messages, push extras and TTS* for the push titles/messages, extra push data (JSON such as `{"url": "/dashboard/gate", "ttl": 0, "priority": "high"}`) and TTS settings.
+- **Frigate settings** — listen to Frigate over MQTT, the topic, and the push image URL.
+
+**Save** validates the form, stores it in the Dial Matrix integration and reloads it; the grid updates within a second. **Cancel** discards the draft. Only admins can save. Message placeholders: `$icon`, `$doorbell_name`, `$camera_name`, `$label`, `$label_title`, `$sub_label`, `$zones`.
+
+Requires the Dial Matrix integration to be added once under **Settings → Devices & services** (or imported from YAML); the card then does the rest.
+
 ### Options
 
 | Option        | Default                | Description                                                                                          |
 | ------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `title`       | `Call Routing Matrix`  | Card title                                                                                           |
+| `editable`    | `true`                 | Show the pencil button that opens the inline editor                                                  |
 | `event_types` | all                    | Only show these event types, e.g. `[doorbell]` or `[person, car]`                                    |
 | `group_rows`  | `true`                 | Insert a header row per event type. When `false`, camera rows get an inline icon instead             |
 | `type_labels` | see below              | Override group header text per event type, e.g. `{ person: 'People', car: 'Vehicles' }`              |
