@@ -265,7 +265,7 @@ class DialMatrixCard extends HTMLElement {
 
     const emptyState =
       rowCount === 0
-        ? `<p class="empty">No Dial Matrix switches found. Check your <code>configuration.yaml</code>.</p>`
+        ? `<p class="empty">No Dial Matrix switches found. Add doorbells, cameras and targets under <code>Settings → Devices &amp; services → Dial Matrix → Configure</code>.</p>`
         : '';
 
     this.shadowRoot.innerHTML = `
