@@ -1,14 +1,17 @@
 # Dial Matrix Card
 
-A custom [Lovelace](https://www.home-assistant.io/dashboards/) card for [Home Assistant](https://www.home-assistant.io/) that renders a visual call-routing matrix. Each cell is a toggle button that enables or disables which notification targets receive a ring from a given doorbell.
+A custom [Lovelace](https://www.home-assistant.io/dashboards/) card for [Home Assistant](https://www.home-assistant.io/) that renders a visual event-routing matrix. Each cell is a toggle button that enables or disables which notification targets are alerted for a given event source: a doorbell ring, or a [Frigate](https://frigate.video) person / car detection on a camera.
+
+Companion card for the [Dial Matrix](https://github.com/NINE78/corte-dialmatrix) integration.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
 ## Features
 
-- Visual grid of doorbells (rows) × notification targets (columns)
+- Visual grid of event sources (rows) × notification targets (columns)
+- Rows grouped by event type — **Doorbells**, **Person detected**, **Car detected** — with icons
 - One-tap toggle buttons — green ✓ for enabled, outlined ✗ for disabled
-- Automatically discovers switch entities that expose `doorbell_id` / `target_id` attributes
+- Automatically discovers the integration's switch entities; no entity lists to maintain
 - Only re-renders when matrix switch states actually change
 - Responsive, scrollable grid with rotated column headers
 - Fully themed via Home Assistant CSS variables
@@ -41,18 +44,50 @@ type: custom:dialmatrix-card
 title: Call Routing Matrix # optional, defaults to "Call Routing Matrix"
 ```
 
+### Options
+
+| Option        | Default                | Description                                                                                          |
+| ------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| `title`       | `Call Routing Matrix`  | Card title                                                                                           |
+| `event_types` | all                    | Only show these event types, e.g. `[doorbell]` or `[person, car]`                                    |
+| `group_rows`  | `true`                 | Insert a header row per event type. When `false`, camera rows get an inline icon instead             |
+| `type_labels` | see below              | Override group header text per event type, e.g. `{ person: 'People', car: 'Vehicles' }`              |
+| `type_icons`  | see below              | Override group icons per event type, e.g. `{ car: 'mdi:car-side' }`                                  |
+
+Built-in labels / icons: `doorbell` → _Doorbells_ / `mdi:doorbell`, `person` → _Person detected_ / `mdi:walk`, `car` → _Car detected_ / `mdi:car`. Any other Frigate label configured in the integration (e.g. `dog`) gets a _Dog detected_ header with a generic icon.
+
+Example — two cards, one for the doorbells and one for camera detections:
+
+```yaml
+- type: custom:dialmatrix-card
+  title: Doorbells
+  event_types: [doorbell]
+  group_rows: false
+
+- type: custom:dialmatrix-card
+  title: Camera alerts
+  event_types: [person, car]
+  type_labels:
+    person: People
+    car: Vehicles
+```
+
 ## Switch entity requirements
 
-The card discovers switches automatically. Each switch entity must expose the following attributes:
+The card discovers switches automatically. Each switch entity must expose the following attributes (the Dial Matrix integration does this for you):
 
-| Attribute       | Type   | Description                                            |
-| --------------- | ------ | ------------------------------------------------------ |
-| `doorbell_id`   | string | Unique identifier for the doorbell (row)               |
-| `doorbell_name` | string | Display name for the doorbell                          |
-| `target_id`     | string | Unique identifier for the notification target (column) |
-| `target_name`   | string | Display name for the notification target               |
+| Attribute     | Type   | Description                                                                    |
+| ------------- | ------ | ------------------------------------------------------------------------------ |
+| `source_id`   | string | Unique identifier for the event source (row)                                   |
+| `source_name` | string | Display name for the source (doorbell or camera name)                          |
+| `event_type`  | string | `doorbell`, `person`, `car`, … — determines the row group                      |
+| `target_id`   | string | Unique identifier for the notification target (column)                         |
+| `target_name` | string | Display name for the notification target                                       |
+| `sort_order`  | list   | Optional list of integers used to order rows and columns as configured         |
 
-The `state` of the switch (`on` / `off`) determines whether that doorbell → target route is active.
+Switches from older integration versions that only expose `doorbell_id` / `doorbell_name` are still recognised and shown as doorbell rows.
+
+The `state` of the switch (`on` / `off`) determines whether that source → target route is active.
 
 ## Screenshot
 

@@ -1,12 +1,31 @@
 /**
  * Dial Matrix Card — custom Lovelace card for Home Assistant
- * Renders a visual call-routing matrix and toggles switch entities.
+ * Renders a visual event-routing matrix and toggles switch entities.
+ *
+ * Rows are event sources: doorbells, and Frigate camera detections
+ * (person, car, …). Columns are notification targets.
  *
  * Installation: add to Lovelace resources as a JavaScript module.
  * Usage:
  *   type: custom:dialmatrix-card
- *   title: "Call Routing Matrix"   # optional
+ *   title: "Call Routing Matrix"     # optional
+ *   event_types: [doorbell, person]  # optional filter; default: all
+ *   group_rows: true                 # optional; group rows by event type
+ *   type_labels:                     # optional overrides for group headers
+ *     person: "People"
+ *   type_icons:                      # optional overrides for group icons
+ *     car: "mdi:car-side"
  */
+
+const DEFAULT_TITLE = 'Call Routing Matrix';
+
+// Display metadata per event type. Unknown types fall back to a generic entry.
+const TYPE_META = {
+  doorbell: { label: 'Doorbells', icon: 'mdi:doorbell', order: 0 },
+  person: { label: 'Person detected', icon: 'mdi:walk', order: 1 },
+  car: { label: 'Car detected', icon: 'mdi:car', order: 2 },
+};
+const DEFAULT_TYPE_ICON = 'mdi:motion-sensor';
 
 class DialMatrixCard extends HTMLElement {
   constructor() {
@@ -21,7 +40,16 @@ class DialMatrixCard extends HTMLElement {
    * Called by Lovelace when the card config is set/updated.
    */
   setConfig(config) {
-    this._config = config;
+    if (config.event_types !== undefined && !Array.isArray(config.event_types)) {
+      throw new Error('dialmatrix-card: `event_types` must be a list');
+    }
+    this._config = {
+      group_rows: true,
+      type_labels: {},
+      type_icons: {},
+      ...config,
+    };
+    this._renderedStateHash = null;
     this._render();
   }
 
@@ -33,9 +61,8 @@ class DialMatrixCard extends HTMLElement {
     this._hass = hass;
 
     // Build a lightweight hash of only the matrix switch states
-    const hash = Object.entries(hass.states)
-      .filter(([, s]) => s.attributes.doorbell_id !== undefined)
-      .map(([id, s]) => `${id}:${s.state}`)
+    const hash = this._getMatrixSwitches()
+      .map((s) => `${s.entity_id}:${s.state}`)
       .sort()
       .join('|');
 
@@ -49,37 +76,120 @@ class DialMatrixCard extends HTMLElement {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  _getMatrixSwitches() {
-    if (!this._hass) return [];
-    return Object.values(this._hass.states).filter(
-      (s) => s.attributes.doorbell_id !== undefined,
+  static _isMatrixSwitch(s) {
+    const a = s.attributes;
+    return (
+      a.target_id !== undefined &&
+      (a.source_id !== undefined || a.doorbell_id !== undefined)
     );
   }
 
-  _buildMatrix(switches) {
-    const doorbellMap = new Map();
-    const targetMap = new Map();
-
-    for (const s of switches) {
-      const { doorbell_id, doorbell_name, target_id, target_name } =
-        s.attributes;
-      if (!doorbellMap.has(doorbell_id))
-        doorbellMap.set(doorbell_id, doorbell_name);
-      if (!targetMap.has(target_id)) targetMap.set(target_id, target_name);
-    }
-
+  /**
+   * Normalise a switch state object. Supports both the current attribute set
+   * (source_id / event_type) and the legacy doorbell-only set (doorbell_id).
+   */
+  static _normalise(s) {
+    const a = s.attributes;
+    const eventType = a.event_type || 'doorbell';
     return {
-      doorbells: [...doorbellMap.entries()].map(([id, name]) => ({ id, name })),
-      targets: [...targetMap.entries()].map(([id, name]) => ({ id, name })),
+      entityId: s.entity_id,
+      on: s.state === 'on',
+      eventType,
+      sourceId: a.source_id !== undefined ? a.source_id : a.doorbell_id,
+      sourceName:
+        a.source_name !== undefined ? a.source_name : a.doorbell_name || a.doorbell_id,
+      targetId: a.target_id,
+      targetName: a.target_name !== undefined ? a.target_name : a.target_id,
+      order: Array.isArray(a.sort_order) ? a.sort_order : null,
     };
   }
 
-  _findSwitch(switches, doorbellId, targetId) {
-    return switches.find(
-      (s) =>
-        s.attributes.doorbell_id === doorbellId &&
-        s.attributes.target_id === targetId,
+  _getMatrixSwitches() {
+    if (!this._hass) return [];
+    let switches = Object.values(this._hass.states).filter(
+      DialMatrixCard._isMatrixSwitch,
     );
+    const filter = this._config.event_types;
+    if (Array.isArray(filter) && filter.length > 0) {
+      const allowed = new Set(filter.map(String));
+      switches = switches.filter((s) =>
+        allowed.has(String(s.attributes.event_type || 'doorbell')),
+      );
+    }
+    return switches;
+  }
+
+  _typeMeta(type) {
+    const base = TYPE_META[type] || {
+      label: `${DialMatrixCard._titleCase(type)} detected`,
+      icon: DEFAULT_TYPE_ICON,
+      order: 100,
+    };
+    return {
+      label: this._config.type_labels[type] || base.label,
+      icon: this._config.type_icons[type] || base.icon,
+      order: base.order,
+    };
+  }
+
+  static _titleCase(str) {
+    const s = String(str).replace(/_/g, ' ');
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  static _compareOrder(a, b) {
+    // Prefer explicit sort_order from the integration; fall back to type order.
+    if (a.order && b.order) {
+      const n = Math.max(a.order.length, b.order.length);
+      for (let i = 0; i < n; i++) {
+        const d = (a.order[i] ?? 0) - (b.order[i] ?? 0);
+        if (d !== 0) return d;
+      }
+      return 0;
+    }
+    return 0;
+  }
+
+  /**
+   * Build the matrix model:
+   *   groups:  [{ type, label, icon, rows: [{ key, id, name }] }]
+   *   targets: [{ id, name }]
+   *   cells:   Map<`${rowKey}|${targetId}`, { entityId, on }>
+   */
+  _buildMatrix(switches) {
+    const items = switches.map(DialMatrixCard._normalise);
+    items.sort(DialMatrixCard._compareOrder);
+
+    const groupMap = new Map();
+    const targetMap = new Map();
+    const cells = new Map();
+
+    for (const it of items) {
+      const rowKey = `${it.eventType}::${it.sourceId}`;
+      if (!groupMap.has(it.eventType)) {
+        groupMap.set(it.eventType, {
+          type: it.eventType,
+          ...this._typeMeta(it.eventType),
+          rows: new Map(),
+        });
+      }
+      const group = groupMap.get(it.eventType);
+      if (!group.rows.has(rowKey)) {
+        group.rows.set(rowKey, { key: rowKey, id: it.sourceId, name: it.sourceName });
+      }
+      if (!targetMap.has(it.targetId)) targetMap.set(it.targetId, it.targetName);
+      cells.set(`${rowKey}|${it.targetId}`, { entityId: it.entityId, on: it.on });
+    }
+
+    const groups = [...groupMap.values()]
+      .sort((a, b) => a.order - b.order)
+      .map((g) => ({ ...g, rows: [...g.rows.values()] }));
+
+    return {
+      groups,
+      targets: [...targetMap.entries()].map(([id, name]) => ({ id, name })),
+      cells,
+    };
   }
 
   _toggle(entityId) {
@@ -95,9 +205,11 @@ class DialMatrixCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
 
-    const title = this._config.title || 'Call Routing Matrix';
+    const title = this._config.title || DEFAULT_TITLE;
     const switches = this._getMatrixSwitches();
-    const { doorbells, targets } = this._buildMatrix(switches);
+    const { groups, targets, cells } = this._buildMatrix(switches);
+    const groupRows = this._config.group_rows !== false;
+    const rowCount = groups.reduce((n, g) => n + g.rows.length, 0);
 
     const colTemplate =
       targets.length > 0
@@ -105,36 +217,54 @@ class DialMatrixCard extends HTMLElement {
         : 'auto';
 
     // Header row
-    let cells = `<div class="cell corner"></div>`;
+    let html = `<div class="cell corner"></div>`;
     for (const t of targets) {
-      cells += `<div class="cell th"><span class="th-text">${this._escape(t.name)}</span></div>`;
+      html += `<div class="cell th"><span class="th-text">${this._escape(t.name)}</span></div>`;
     }
 
-    // Data rows
-    for (const db of doorbells) {
-      cells += `<div class="cell rh">${this._escape(db.name)}</div>`;
-      for (const t of targets) {
-        const sw = this._findSwitch(switches, db.id, t.id);
-        if (sw) {
-          const on = sw.state === 'on';
-          cells += `
-            <div class="cell">
-              <button
-                class="btn ${on ? 'on' : 'off'}"
-                data-entity="${sw.entity_id}"
-                title="${this._escape(db.name)} → ${this._escape(t.name)}: ${on ? 'enabled' : 'disabled'}"
-                aria-pressed="${on}"
-                aria-label="${this._escape(db.name)} to ${this._escape(t.name)}"
-              >${on ? '✓' : '✗'}</button>
-            </div>`;
-        } else {
-          cells += `<div class="cell"><span class="missing">–</span></div>`;
+    // Data rows, grouped by event type
+    for (const g of groups) {
+      if (groupRows) {
+        html += `
+          <div class="cell group">
+            <ha-icon class="group-icon" icon="${this._escape(g.icon)}"></ha-icon>
+            <span class="group-text">${this._escape(g.label)}</span>
+          </div>`;
+      }
+      for (const row of g.rows) {
+        const rowLabel =
+          groupRows || g.type === 'doorbell'
+            ? this._escape(row.name)
+            : `<ha-icon class="row-icon" icon="${this._escape(g.icon)}"></ha-icon>${this._escape(row.name)}`;
+        const rowTitle =
+          g.type === 'doorbell'
+            ? row.name
+            : `${row.name} · ${DialMatrixCard._titleCase(g.type)}`;
+        html += `<div class="cell rh" title="${this._escape(rowTitle)}">${rowLabel}</div>`;
+
+        for (const t of targets) {
+          const cell = cells.get(`${row.key}|${t.id}`);
+          if (cell) {
+            const { on, entityId } = cell;
+            html += `
+              <div class="cell">
+                <button
+                  class="btn ${on ? 'on' : 'off'}"
+                  data-entity="${this._escape(entityId)}"
+                  title="${this._escape(rowTitle)} → ${this._escape(t.name)}: ${on ? 'enabled' : 'disabled'}"
+                  aria-pressed="${on}"
+                  aria-label="${this._escape(rowTitle)} to ${this._escape(t.name)}"
+                >${on ? '✓' : '✗'}</button>
+              </div>`;
+          } else {
+            html += `<div class="cell"><span class="missing">–</span></div>`;
+          }
         }
       }
     }
 
     const emptyState =
-      doorbells.length === 0
+      rowCount === 0
         ? `<p class="empty">No Dial Matrix switches found. Check your <code>configuration.yaml</code>.</p>`
         : '';
 
@@ -186,14 +316,39 @@ class DialMatrixCard extends HTMLElement {
           white-space: nowrap;
         }
 
-        /* Row headers — doorbell names */
+        /* Group headers — one per event type, spanning all columns */
+        .cell.group {
+          grid-column: 1 / -1;
+          justify-content: flex-start;
+          gap: 6px;
+          min-height: 28px;
+          margin-top: 6px;
+          padding-bottom: 2px;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+          font-size: 0.72em;
+          font-weight: 600;
+          color: var(--secondary-text-color);
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .group-icon {
+          --mdc-icon-size: 16px;
+          color: var(--primary-color, #03a9f4);
+        }
+
+        /* Row headers — source names */
         .cell.rh {
           justify-content: flex-start;
+          gap: 6px;
           padding-right: 10px;
           font-size: 0.85em;
           font-weight: 500;
           color: var(--primary-text-color);
           white-space: nowrap;
+        }
+        .row-icon {
+          --mdc-icon-size: 16px;
+          color: var(--secondary-text-color);
         }
 
         /* Corner spacer */
@@ -251,7 +406,7 @@ class DialMatrixCard extends HTMLElement {
         <div class="card-content">
           <h2>${this._escape(title)}</h2>
           ${emptyState}
-          ${doorbells.length > 0 ? `<div class="grid">${cells}</div>` : ''}
+          ${rowCount > 0 ? `<div class="grid">${html}</div>` : ''}
         </div>
       </ha-card>
     `;
@@ -272,14 +427,15 @@ class DialMatrixCard extends HTMLElement {
 
   // Used by Lovelace to size the card in the grid
   getCardSize() {
-    const switches = this._getMatrixSwitches();
-    const { doorbells } = this._buildMatrix(switches);
-    return Math.max(3, doorbells.length + 2);
+    const { groups } = this._buildMatrix(this._getMatrixSwitches());
+    const rows = groups.reduce((n, g) => n + g.rows.length, 0);
+    const headers = this._config.group_rows !== false ? groups.length : 0;
+    return Math.max(3, rows + headers + 2);
   }
 
   // Stub config for the card picker UI
   static getStubConfig() {
-    return { title: 'Call Routing Matrix' };
+    return { title: DEFAULT_TITLE };
   }
 }
 
@@ -291,6 +447,6 @@ window.customCards.push({
   type: 'dialmatrix-card',
   name: 'Dial Matrix Card',
   description:
-    'Visual call-routing matrix: selectively enable which notification targets receive each doorbell ring.',
+    'Visual event-routing matrix: choose which targets are notified for each doorbell ring and Frigate person / car detection.',
   preview: true,
 });
