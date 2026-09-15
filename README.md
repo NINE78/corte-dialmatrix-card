@@ -67,6 +67,7 @@ Requires the Dial Matrix integration to be added once under **Settings → Devic
 | Option        | Default                | Description                                                                                          |
 | ------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `title`       | `Call Routing Matrix`  | Card title                                                                                           |
+| `show_title`  | `true`                 | Set to `false` to hide the header and save vertical space                                            |
 | `editable`    | `false`                | Also show a pencil button on the card that opens the routing editor inline                           |
 | `event_types` | all                    | Only show these event types, e.g. `[doorbell]` or `[person, car]`                                    |
 | `group_rows`  | `true`                 | Insert a header row per event type. When `false`, camera rows get an inline icon instead             |

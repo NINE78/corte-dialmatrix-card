@@ -14,6 +14,7 @@
  * Usage:
  *   type: custom:dialmatrix-card
  *   title: "Call Routing Matrix"     # optional
+ *   show_title: false                # optional; hide the header to save space
  *   event_types: [doorbell, person]  # optional filter; default: all
  *   group_rows: true                 # optional; group rows by event type
  *   editable: false                  # optional; also show a pencil on the card
@@ -650,8 +651,13 @@ class DialMatrixCardEditor extends HTMLElement {
     const cfg = { ...this._config };
     if (kind === 'bool') {
       cfg[key] = !!el.checked;
-      // group_rows / editable defaults: drop the key when it equals the default
-      if ((key === 'group_rows' && cfg[key] === true) || (key === 'editable' && cfg[key] === false)) delete cfg[key];
+      // Drop the key when it equals the default
+      if (
+        (key === 'group_rows' && cfg[key] === true) ||
+        (key === 'show_title' && cfg[key] === true) ||
+        (key === 'editable' && cfg[key] === false)
+      )
+        delete cfg[key];
     } else if (kind === 'list') {
       const list = el.value.split(',').map((s) => s.trim()).filter(Boolean);
       if (list.length) cfg[key] = list;
@@ -681,7 +687,11 @@ class DialMatrixCardEditor extends HTMLElement {
           <div class="fields">
             <label class="f">
               <span>Title</span>
-              <input type="text" data-option="title" value="${esc(c.title || '')}" placeholder="${esc(DEFAULT_TITLE)}">
+              <input type="text" data-option="title" value="${esc(typeof c.title === 'string' ? c.title : '')}" placeholder="${esc(DEFAULT_TITLE)}">
+            </label>
+            <label class="f check">
+              <input type="checkbox" data-option="show_title" data-kind="bool" ${c.show_title !== false ? 'checked' : ''}>
+              <span>Show title</span>
             </label>
             <label class="f">
               <span>Show only event types (comma separated, empty = all)</span>
@@ -907,6 +917,7 @@ class DialMatrixCard extends HTMLElement {
     if (!this.shadowRoot) return;
 
     const title = this._config.title || DEFAULT_TITLE;
+    const showTitle = this._config.show_title !== false && this._config.title !== false;
     const switches = this._getMatrixSwitches();
     const { groups, targets, cells } = this._buildMatrix(switches);
     const groupRows = this._config.group_rows !== false;
@@ -973,14 +984,21 @@ class DialMatrixCard extends HTMLElement {
          </button>`
       : '';
 
+    // Header: title and/or pencil. Omitted entirely when neither is shown,
+    // and shrunk to just the pencil when the title is hidden.
+    const header =
+      showTitle || editButton
+        ? `<div class="header ${showTitle ? '' : 'compact'}">
+             ${showTitle ? `<h2>${escapeHtml(title)}</h2>` : ''}
+             ${editButton}
+           </div>`
+        : '';
+
     this.shadowRoot.innerHTML = `
       <style>${DialMatrixCard._styles(colTemplate)}</style>
       <ha-card>
-        <div class="card-content">
-          <div class="header">
-            <h2>${escapeHtml(title)}</h2>
-            ${editButton}
-          </div>
+        <div class="card-content ${showTitle ? '' : 'no-title'}">
+          ${header}
           ${emptyState}
           ${rowCount > 0 ? `<div class="grid">${html}</div>` : ''}
           ${this._editing ? `<div class="inline-editor"><dialmatrix-routing-editor></dialmatrix-routing-editor></div>` : ''}
@@ -1007,6 +1025,7 @@ class DialMatrixCard extends HTMLElement {
         :host { display: block; }
 
         .card-content { padding: 16px; }
+        .card-content.no-title { padding-top: 8px; }
 
         .header {
           display: flex;
@@ -1015,6 +1034,7 @@ class DialMatrixCard extends HTMLElement {
           gap: 8px;
           margin: 0 0 14px;
         }
+        .header.compact { justify-content: flex-end; margin: 0; }
         h2 {
           margin: 0;
           font-size: 1.05em;

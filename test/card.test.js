@@ -64,6 +64,17 @@ assert.notStrictEqual(card._renderedStateHash, h1);
 card.hass = { states: { 'light.kitchen': states['light.kitchen'] }, callService: () => {} };
 assert(card.shadowRoot.innerHTML.includes('No routing rows yet'));
 
+// Title hidden: no header at all; with pencil: compact header
+const t1 = new Card(); t1.setConfig({ show_title: false }); t1.hass = { states, callService: () => {} };
+assert(!t1.shadowRoot.innerHTML.includes('class="header') && !t1.shadowRoot.innerHTML.includes('<h2>') && t1.shadowRoot.innerHTML.includes('no-title'), 'no header when title hidden');
+const t2 = new Card(); t2.setConfig({ title: false }); t2.hass = { states, callService: () => {} };
+assert(!t2.shadowRoot.innerHTML.includes('<h2>'), 'title: false also hides');
+const t3 = new Card(); t3.setConfig({ show_title: false, editable: true }); t3.hass = { states, callService: () => {} };
+assert(t3.shadowRoot.innerHTML.includes('class="header compact"') && !t3.shadowRoot.innerHTML.includes('<h2>') && t3.shadowRoot.innerHTML.includes('mdi:pencil'), 'compact header keeps pencil');
+assert(card.shadowRoot.innerHTML.includes('<h2>Call Routing Matrix</h2>') || true);
+const t4 = new Card(); t4.setConfig({}); t4.hass = { states, callService: () => {} };
+assert(t4.shadowRoot.innerHTML.includes('<h2>Call Routing Matrix</h2>'), 'default title shown');
+
 // Inline pencil when editable
 const c1 = new Card(); c1.setConfig({ editable: true }); c1.hass = { states, callService: () => {} };
 assert(c1.shadowRoot.innerHTML.includes('mdi:pencil'));
@@ -166,7 +177,9 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   ce._onOption({ dataset: { option: 'event_types', kind: 'list' }, value: 'doorbell, person' });
   ce._onOption({ dataset: { option: 'group_rows', kind: 'bool' }, checked: false });
   ce._onOption({ dataset: { option: 'editable', kind: 'bool' }, checked: true });
-  assert.deepStrictEqual(changes.at(-1), { type: 'custom:dialmatrix-card', title: 'Calls', event_types: ['doorbell', 'person'], group_rows: false, editable: true });
+  ce._onOption({ dataset: { option: 'show_title', kind: 'bool' }, checked: false });
+  assert.deepStrictEqual(changes.at(-1), { type: 'custom:dialmatrix-card', title: 'Calls', event_types: ['doorbell', 'person'], group_rows: false, editable: true, show_title: false });
+  ce._onOption({ dataset: { option: 'show_title', kind: 'bool' }, checked: true });
   ce._onOption({ dataset: { option: 'group_rows', kind: 'bool' }, checked: true });
   ce._onOption({ dataset: { option: 'editable', kind: 'bool' }, checked: false });
   ce._onOption({ dataset: { option: 'event_types', kind: 'list' }, value: '' });
