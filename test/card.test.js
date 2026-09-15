@@ -180,6 +180,24 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   assert.deepStrictEqual(saved.targets[0].notify_data, { url: '/gate', priority: 'high' });
   assert.strictEqual(saved.targets[1].tts_volume, 55); assert.strictEqual(saved.targets[1].tts_announce, true);
   assert.deepStrictEqual(saved.targets[1].tts_media_player, ['media_player.kitchen', 'media_player.office']);
+
+  // Test button: uses unsaved settings, renders message placeholders server-side, reports errors
+  assert(ed.shadowRoot.innerHTML.includes('data-action="test-tts" data-path="targets.1"'), 'test button rendered');
+  ed._onInput({ dataset: { path: 'targets.1.tts_volume', kind: 'text' }, value: '30' });
+  await ed._testTts(1, null);
+  const testCall = wsCalls.filter((m) => m.type === 'dialmatrix/tts/test').at(-1);
+  assert.deepStrictEqual(testCall, { type: 'dialmatrix/tts/test', target: { tts_entity: 'tts.google_en_com', tts_media_player: ['media_player.kitchen', 'media_player.office'], tts_announce: true, tts_volume: 30 }, message: 'x' });
+  assert(ed._lastTest.text.startsWith('Sent to the speakers') && !ed._lastTest.isError);
+  await ed._testTts(0, null);
+  assert(ed._lastTest.isError && ed._lastTest.text.includes('Pick a text-to-speech engine'), 'target without speakers');
+  ed._onInput({ dataset: { path: 'targets.1.tts_volume', kind: 'text' }, value: '999' });
+  await ed._testTts(1, null);
+  assert(ed._lastTest.isError && ed._lastTest.text.includes('volume must be'), 'invalid volume reported');
+  ed._onInput({ dataset: { path: 'targets.1.tts_volume', kind: 'text' }, value: '' });
+  ed._hass = { ...hass, callWS: async (m) => { if (m.type === 'dialmatrix/tts/test') throw { code: 'not_set_up', message: 'Dial Matrix is not set up yet' }; return { config: stored, defaults }; } };
+  await ed._testTts(1, null);
+  assert(ed._lastTest.isError && ed._lastTest.text.includes('Test failed: Dial Matrix is not set up yet'));
+  ed._hass = hass;
   assert.strictEqual(saved.targets[0].notify_service, 'notify.mobile_app_lewis');
   assert(savedEvent && ed.shadowRoot.innerHTML.includes('Saved.'), 'saved event + notice');
 

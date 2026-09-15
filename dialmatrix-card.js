@@ -153,6 +153,12 @@ const FORM_STYLES = `
     background: var(--card-background-color, #fff);
   }
   .choice { display: flex; align-items: center; gap: 6px; font-size: 0.9em; min-width: 0; }
+  .test-row { flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .test-row button { display: inline-flex; align-items: center; gap: 4px; }
+  .test-row button ha-icon { --mdc-icon-size: 16px; }
+  .test-status { margin: 0; }
+  .test-status.ok { color: var(--success-color, #4caf50); }
+  .test-status.error { color: var(--error-color, #db4437); }
   .choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .f textarea { resize: vertical; font-family: monospace; font-size: 0.82em; }
   .f input:focus, .f textarea:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
@@ -495,6 +501,9 @@ class DialMatrixRoutingEditor extends HTMLElement {
     } else if (action === 'save') {
       this.save();
       return;
+    } else if (action === 'test-tts') {
+      this._testTts(Number(el.dataset.path.split('.')[1]), el);
+      return;
     } else if (action === 'reload') {
       this._loaded = false;
       this.load();
@@ -505,6 +514,54 @@ class DialMatrixRoutingEditor extends HTMLElement {
       return;
     }
     this._render();
+  }
+
+  /**
+   * Speak the target's doorbell TTS message on its speakers using the current
+   * (unsaved) settings. Feedback is written next to the button without a
+   * re-render, so the open <details> and typed values stay put.
+   */
+  async _testTts(index, button) {
+    const t = this._draft && this._draft.targets[index];
+    if (!t) return;
+    const status = button && button.parentNode ? button.parentNode.querySelector('.test-status') : null;
+    const say = (text, isError) => {
+      if (status) {
+        status.textContent = text;
+        status.className = `test-status ${isError ? 'error' : 'ok'}`;
+      }
+      this._lastTest = { index, text, isError };
+    };
+    let target;
+    try {
+      target = DialMatrixRoutingEditor.fromDraft({ ...this._draft, doorbells: [], cameras: [], targets: [{ ...t, id: t.id || 'test', name: t.name || 'Test' }] }).targets[0];
+    } catch (err) {
+      say(err.message, true);
+      return;
+    }
+    if (!target.tts_entity || !target.tts_media_player || !target.tts_media_player.length) {
+      say('Pick a text-to-speech engine and at least one speaker first.', true);
+      return;
+    }
+    if (button) button.disabled = true;
+    say('Playing…', false);
+    try {
+      await this._hass.callWS({
+        type: 'dialmatrix/tts/test',
+        target: {
+          tts_entity: target.tts_entity,
+          tts_media_player: target.tts_media_player,
+          tts_announce: target.tts_announce,
+          ...(target.tts_volume !== undefined ? { tts_volume: target.tts_volume } : {}),
+        },
+        message: target.tts_message || 'This is a test announcement from Dial Matrix',
+      });
+      say('Sent to the speakers. Nothing to hear? Check the speaker is on and the volume.', false);
+    } catch (err) {
+      say(`Test failed: ${errText(err)}`, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   _render() {
@@ -641,6 +698,12 @@ class DialMatrixRoutingEditor extends HTMLElement {
                   <input type="checkbox" data-path="targets.${i}.tts_announce" data-kind="bool" ${t.tts_announce !== false ? 'checked' : ''}>
                   <span>Announce: duck the music, speak, resume (Sonos and similar)</span>
                 </label>
+                <div class="f wide test-row">
+                  <button class="add" data-action="test-tts" data-path="targets.${i}" title="Speak the doorbell TTS message on the selected speakers with the settings above (unsaved changes included)">
+                    <ha-icon icon="mdi:volume-high"></ha-icon> Test on speakers
+                  </button>
+                  <span class="test-status hint"></span>
+                </div>
               </div>
             </details>
           </div>
