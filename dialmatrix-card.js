@@ -44,6 +44,7 @@ const FALLBACK_DEFAULTS = {
     notify_data: {},
     tts_message: 'Someone is at the $doorbell_name door',
     detect_tts_message: 'A $label was detected at the $camera_name',
+    tts_announce: true,
   },
   camera: { labels: ['person', 'car'], zones: {} },
   frigate: {
@@ -61,6 +62,7 @@ const OPTIONAL_TEXT = new Set([
   'notify_service',
   'tts_entity',
   'tts_media_player',
+  'tts_volume',
 ]);
 
 const escapeHtml = (str) =>
@@ -126,6 +128,32 @@ const FORM_STYLES = `
     width: 100%;
     box-sizing: border-box;
   }
+  .f select {
+    font: inherit;
+    font-size: 0.9em;
+    padding: 6px 8px;
+    border: 1px solid var(--divider-color, #bdbdbd);
+    border-radius: 6px;
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .f select:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
+  .choices {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 4px 12px;
+    padding: 6px 8px;
+    border: 1px solid var(--divider-color, #bdbdbd);
+    border-radius: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--card-background-color, #fff);
+  }
+  .choice { display: flex; align-items: center; gap: 6px; font-size: 0.9em; min-width: 0; }
+  .choice span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .f textarea { resize: vertical; font-family: monospace; font-size: 0.82em; }
   .f input:focus, .f textarea:focus { outline: none; border-color: var(--primary-color, #03a9f4); }
   .f textarea.invalid { border-color: var(--error-color, #db4437); }
@@ -311,7 +339,13 @@ class DialMatrixRoutingEditor extends HTMLElement {
         ...t,
         notify_service: t.notify_service || '',
         tts_entity: t.tts_entity || '',
-        tts_media_player: t.tts_media_player || '',
+        tts_media_player: Array.isArray(t.tts_media_player)
+          ? [...t.tts_media_player]
+          : t.tts_media_player
+            ? [t.tts_media_player]
+            : [],
+        tts_announce: t.tts_announce !== false,
+        tts_volume: t.tts_volume == null ? '' : String(t.tts_volume),
         notify_data: t.notify_data && typeof t.notify_data === 'object' ? t.notify_data : {},
       })),
       frigate: { ...frDefaults, ...(config.frigate || {}) },
@@ -355,10 +389,29 @@ class DialMatrixRoutingEditor extends HTMLElement {
       return clean({ ...c, labels, zones });
     });
 
+    const targets = draft.targets.map((t) => {
+      const players = (Array.isArray(t.tts_media_player) ? t.tts_media_player : [t.tts_media_player])
+        .map((p) => String(p || '').trim())
+        .filter(Boolean);
+      let volume = String(t.tts_volume == null ? '' : t.tts_volume).trim();
+      if (volume !== '') {
+        const n = Number(volume);
+        if (!Number.isInteger(n) || n < 0 || n > 100)
+          throw new Error(`Target "${t.id}": announcement volume must be a whole number from 0 to 100.`);
+        volume = n;
+      }
+      return clean({
+        ...t,
+        tts_media_player: players.length ? players : '',
+        tts_announce: t.tts_announce !== false,
+        tts_volume: volume,
+      });
+    });
+
     return {
       doorbells: draft.doorbells.map(clean),
       cameras,
-      targets: draft.targets.map(clean),
+      targets,
       frigate: { ...draft.frigate, mqtt: !!draft.frigate.mqtt },
     };
   }
@@ -379,6 +432,16 @@ class DialMatrixRoutingEditor extends HTMLElement {
     const kind = el.dataset.kind || 'text';
     if (kind === 'bool') {
       this._setPath(path, !!el.checked);
+    } else if (kind === 'multi') {
+      // one checkbox per option; the draft holds the list of checked values
+      const parts = path.split('.');
+      let list = this._draft;
+      for (const part of parts) list = list[part];
+      const current = Array.isArray(list) ? list : [];
+      const next = el.checked
+        ? [...new Set([...current, el.value])]
+        : current.filter((v) => v !== el.value);
+      this._setPath(path, next);
     } else if (kind === 'list') {
       this._setPath(
         path,
@@ -467,6 +530,43 @@ class DialMatrixRoutingEditor extends HTMLElement {
       </label>`;
     const removeBtn = (path, what) =>
       `<button class="icon-btn danger" data-action="remove" data-path="${path}" title="Remove ${what}" aria-label="Remove ${what}"><ha-icon icon="mdi:delete-outline"></ha-icon></button>`;
+    // Single-choice dropdown; a stored value that is not in the list is kept as an extra option
+    const select = (path, label, value, options, opts = {}) => {
+      const known = options.some((o) => o.value === value);
+      const all = value && !known ? [{ value, label: `${value} (not found)` }, ...options] : options;
+      return `
+      <label class="f ${opts.wide ? 'wide' : ''}">
+        <span>${esc(label)}</span>
+        <select data-path="${path}" data-kind="select">
+          <option value="" ${value ? '' : 'selected'}>${esc(opts.none || '— none —')}</option>
+          ${all.map((o) => `<option value="${esc(o.value)}" ${o.value === value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}
+        </select>
+      </label>`;
+    };
+    // Multi-choice checkbox list
+    const multi = (path, label, values, options) => {
+      const known = new Set(options.map((o) => o.value));
+      const all = [...values.filter((v) => !known.has(v)).map((v) => ({ value: v, label: `${v} (not found)` })), ...options];
+      const boxes = all.length
+        ? all
+            .map(
+              (o) => `
+          <label class="choice">
+            <input type="checkbox" data-path="${path}" data-kind="multi" value="${esc(o.value)}" ${values.includes(o.value) ? 'checked' : ''}>
+            <span>${esc(o.label)}</span>
+          </label>`,
+            )
+            .join('')
+        : `<span class="hint">No media players found.</span>`;
+      return `
+      <div class="f wide">
+        <span>${esc(label)}</span>
+        <div class="choices">${boxes}</div>
+      </div>`;
+    };
+    const notifyOptions = this._notifyOptions();
+    const ttsOptions = this._entityOptions('tts');
+    const playerOptions = this._entityOptions('media_player');
 
     // Doorbells
     let doorbells = d.doorbells
@@ -518,7 +618,7 @@ class DialMatrixRoutingEditor extends HTMLElement {
           <div class="fields">
             ${text(`targets.${i}.id`, 'ID', t.id, { placeholder: 'alice_phone' })}
             ${text(`targets.${i}.name`, 'Name', t.name, { placeholder: 'Alice' })}
-            ${text(`targets.${i}.notify_service`, 'Notify service', t.notify_service, { placeholder: 'notify.mobile_app_alice_iphone', wide: true })}
+            ${select(`targets.${i}.notify_service`, 'Notify service (phone)', t.notify_service, notifyOptions, { wide: true, none: '— no push notification —' })}
             <details class="wide">
               <summary>Messages, push extras and TTS</summary>
               <div class="fields">
@@ -532,10 +632,15 @@ class DialMatrixRoutingEditor extends HTMLElement {
                     Object.keys(t.notify_data || {}).length ? JSON.stringify(t.notify_data) : '',
                   )}</textarea>
                 </label>
-                ${text(`targets.${i}.tts_entity`, 'TTS entity', t.tts_entity, { placeholder: 'tts.google_en_com' })}
-                ${text(`targets.${i}.tts_media_player`, 'TTS media player', t.tts_media_player, { placeholder: 'media_player.living_room' })}
+                ${select(`targets.${i}.tts_entity`, 'Text-to-speech engine', t.tts_entity, ttsOptions, { none: '— no speech —' })}
+                ${multi(`targets.${i}.tts_media_player`, 'Speakers', t.tts_media_player || [], playerOptions)}
                 ${text(`targets.${i}.tts_message`, 'Doorbell TTS message', t.tts_message)}
                 ${text(`targets.${i}.detect_tts_message`, 'Detection TTS message', t.detect_tts_message)}
+                ${text(`targets.${i}.tts_volume`, 'Announcement volume 0-100 (empty = current volume)', t.tts_volume, { placeholder: '40' })}
+                <label class="f check">
+                  <input type="checkbox" data-path="targets.${i}.tts_announce" data-kind="bool" ${t.tts_announce !== false ? 'checked' : ''}>
+                  <span>Announce: duck the music, speak, resume (Sonos and similar)</span>
+                </label>
               </div>
             </details>
           </div>
@@ -602,12 +707,31 @@ class DialMatrixRoutingEditor extends HTMLElement {
       });
     });
     this.shadowRoot.querySelectorAll('[data-path]:not([data-action])').forEach((el) => {
-      const evt = el.dataset.kind === 'bool' ? 'change' : 'input';
+      const kind = el.dataset.kind;
+      const evt = kind === 'bool' || kind === 'multi' || kind === 'select' ? 'change' : 'input';
       el.addEventListener(evt, () => this._onInput(el));
       if (el.dataset.rerender === 'true') {
         el.addEventListener('change', () => this._render());
       }
     });
+  }
+
+  // -- entity / service choices from the live hass object --------------------
+
+  _entityOptions(domain) {
+    const states = (this._hass && this._hass.states) || {};
+    return Object.keys(states)
+      .filter((id) => id.startsWith(`${domain}.`))
+      .map((id) => ({ value: id, label: (states[id].attributes || {}).friendly_name || id }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  _notifyOptions() {
+    const notify = (this._hass && this._hass.services && this._hass.services.notify) || {};
+    return Object.keys(notify)
+      .filter((name) => name !== 'notify' && name !== 'send_message' && name !== 'persistent_notification')
+      .sort()
+      .map((name) => ({ value: `notify.${name}`, label: `notify.${name}` }));
   }
 }
 

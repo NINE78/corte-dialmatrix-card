@@ -51,7 +51,7 @@ Open the dashboard's edit mode and edit the card. Below the card options the dia
 
 - **Doorbells** — ID, name and the MQTT topic that rings it (the payload is used as Frigate event id, so the push gets the snapshot).
 - **Cameras (Frigate)** — ID, name, Frigate camera name, the labels that get a row (person, car, …) and, per label, the zones an object must enter before anyone is notified.
-- **Notification targets** — ID, name and notify service. Expand *Messages, push extras and TTS* for the push titles/messages, extra push data (JSON such as `{"url": "/dashboard/gate", "ttl": 0, "priority": "high"}`) and TTS settings.
+- **Notification targets** — ID, name and notify service. Expand *Messages, push extras and TTS* for the push titles/messages, extra push data (JSON such as `{"url": "/dashboard/gate", "ttl": 0, "priority": "high"}`) and the speaker settings: the text-to-speech engine and the notify service are dropdowns, speakers are a checkbox list of your media players, plus announcement volume and *Announce* (on Sonos and similar players the music is ducked, the message plays at the set volume, and the music resumes at its previous level).
 - **Frigate settings** — listen to Frigate over MQTT, the topic, and the push image URL.
 
 **Save routing** validates the form and stores it in the Dial Matrix integration, which reloads; the preview and the grid update within a second. This is independent of the dialog's own Save button, which only stores the card options (title, filters). **Discard changes** reloads the form from the integration. Only admins can save.

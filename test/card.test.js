@@ -94,13 +94,21 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
     cameras: [{ id: 'doorbell', name: 'Doorbell', labels: ['person', 'car'], zones: { person: ['outside_driveway_person'], car: ['outside_driveway_car'] } }],
     targets: [{ id: 'iphone_nik', name: 'Nik', notify_service: 'notify.mobile_app_iphonenik', notify_title: '🔔 Ring', notify_message: '$doorbell_name',
                 detect_title: '$icon $label_title detected', detect_message: 'A $label was detected at the $camera_name', notify_data: { url: '/dashboard-iphone/gate', ttl: 0 },
-                tts_message: 'x', detect_tts_message: 'y' }],
+                tts_message: 'x', detect_tts_message: 'y', tts_announce: true },
+              { id: 'sonos', name: 'Sonos', notify_title: 't', notify_message: 'm', detect_title: 'dt', detect_message: 'dm', notify_data: {}, tts_message: 'x', detect_tts_message: 'y',
+                tts_entity: 'tts.google_en_com', tts_media_player: ['media_player.kitchen', 'media_player.living'], tts_announce: false, tts_volume: 40 }],
     frigate: { mqtt: true, mqtt_topic: 'frigate/events', image_url: '/api/frigate/notifications/$event_id/snapshot.jpg' },
   };
   const defaults = { target: { notify_title: '$icon Doorbell', notify_message: 'm', detect_title: 'dt', detect_message: 'dm', notify_data: {}, tts_message: 't', detect_tts_message: 'dtt' },
                      camera: { labels: ['person', 'car'], zones: {} }, frigate: stored.frigate, labels: ['person', 'car'] };
   const wsCalls = [];
-  const hass = { states, callService: () => {}, callWS: async (msg) => { wsCalls.push(msg); if (msg.type === 'dialmatrix/config') return { config: stored, configured: true, defaults }; return { config: msg.config }; } };
+  const richStates = { ...states,
+    'media_player.kitchen': { entity_id: 'media_player.kitchen', state: 'playing', attributes: { friendly_name: 'Kitchen Sonos' } },
+    'media_player.office': { entity_id: 'media_player.office', state: 'idle', attributes: { friendly_name: 'Office' } },
+    'tts.google_en_com': { entity_id: 'tts.google_en_com', state: 'x', attributes: { friendly_name: 'Google Translate' } },
+  };
+  const hass = { states: richStates, services: { notify: { mobile_app_iphonenik: {}, mobile_app_lewis: {}, notify: {}, send_message: {}, persistent_notification: {} } },
+    callService: () => {}, callWS: async (msg) => { wsCalls.push(msg); if (msg.type === 'dialmatrix/config') return { config: stored, configured: true, defaults }; return { config: msg.config }; } };
 
   const draft = RoutingEditor.toDraft(stored, defaults);
   assert.deepStrictEqual(draft.cameras[0].zones, { person: ['outside_driveway_person'], car: ['outside_driveway_car'] });
@@ -109,6 +117,9 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   assert.deepStrictEqual(back.doorbells, stored.doorbells);
   assert.deepStrictEqual(back.cameras, stored.cameras);
   assert.deepStrictEqual(back.targets[0], stored.targets[0], 'empty optional fields dropped');
+  assert.deepStrictEqual(draft.targets[1].tts_media_player, ['media_player.kitchen', 'media_player.living'], 'players as list');
+  assert.strictEqual(draft.targets[1].tts_volume, '40');
+  assert.deepStrictEqual(back.targets[1], stored.targets[1], 'players list, volume number, announce flag round-trip');
   assert.deepStrictEqual(back.frigate, stored.frigate);
   assert.deepStrictEqual(RoutingEditor.fromDraft(RoutingEditor.toDraft({ cameras: [{ id: 'a', name: 'A', zones: ['yard'] }] }, defaults)).cameras[0].zones, { person: ['yard'], car: ['yard'] }, 'list zones expanded per label');
   assert.deepStrictEqual(RoutingEditor.fromDraft(RoutingEditor.toDraft({ cameras: [{ id: 'a', name: 'A', zones: { '*': ['yard'], car: ['x'] } }] }, defaults)).cameras[0].zones, { person: ['yard'], car: ['x'] }, 'star zones fill gaps only');
@@ -118,6 +129,8 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   bad((d) => { d.targets.push({ ...d.targets[0] }); }, /Duplicate target ID/);
   bad((d) => { d.cameras[0].labels = []; }, /at least one label/);
   bad((d) => { d.doorbells[0].name = ' '; }, /needs a name/);
+  bad((d) => { d.targets[1].tts_volume = '120'; }, /volume must be/);
+  bad((d) => { d.targets[1].tts_volume = 'loud'; }, /volume must be/);
 
   const ed = new RoutingEditor();
   ed.hass = hass;
@@ -128,6 +141,14 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   assert(html.includes('data-path="cameras.0.zones.person"') && html.includes('outside_driveway_person') && html.includes('data-path="cameras.0.zones.car"'), 'zone fields per label');
   assert(html.includes('data-path="targets.0.notify_data"') && html.includes('&quot;url&quot;'), 'json textarea');
   assert(html.includes('data-path="frigate.mqtt"') && html.includes('checked'), 'mqtt checkbox');
+  assert(html.includes('data-path="targets.1.tts_volume"') && html.includes('value="40"') && html.includes('data-path="targets.1.tts_announce"'), 'tts fields');
+  // dropdowns from live hass: notify services, tts engines, media players (checkbox list, stored-but-missing kept)
+  assert(html.includes('<select data-path="targets.0.notify_service"') && html.includes('value="notify.mobile_app_lewis"') && !html.includes('value="notify.send_message"'), 'notify dropdown');
+  assert(html.includes('<option value="notify.mobile_app_iphonenik" selected>'), 'notify current selected');
+  assert(html.includes('<select data-path="targets.1.tts_entity"') && html.includes('<option value="tts.google_en_com" selected>Google Translate</option>'), 'tts dropdown');
+  assert(html.includes('data-kind="multi" value="media_player.kitchen" checked') && html.includes('Kitchen Sonos'), 'kitchen checked');
+  assert(html.includes('data-kind="multi" value="media_player.office" ') && !html.includes('value="media_player.office" checked'), 'office unchecked');
+  assert(html.includes('value="media_player.living" checked') && html.includes('media_player.living (not found)'), 'missing player kept');
   assert(html.includes('Save routing') && html.includes('$icon'), 'save button + hint');
 
   ed._onInput({ dataset: { path: 'doorbells.0.name', kind: 'text' }, value: 'De Fré Advocaten' });
@@ -138,11 +159,16 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   ed._onInput(ta); assert(ed._jsonErrors.has('targets.0.notify_data') && ta.classList.c === 'invalid');
   await ed.save(); assert(ed._error.includes('invalid JSON') && !wsCalls.some((m) => m.type === 'dialmatrix/config/save'), 'save blocked on bad json');
   ta.value = '{"url": "/gate", "priority": "high"}'; ed._onInput(ta); assert(!ed._jsonErrors.size);
+  ed._onInput({ dataset: { path: 'targets.1.tts_volume', kind: 'text' }, value: ' 55 ' });
+  ed._onInput({ dataset: { path: 'targets.1.tts_media_player', kind: 'multi' }, value: 'media_player.office', checked: true });
+  ed._onInput({ dataset: { path: 'targets.1.tts_media_player', kind: 'multi' }, value: 'media_player.living', checked: false });
+  ed._onInput({ dataset: { path: 'targets.0.notify_service', kind: 'select' }, value: 'notify.mobile_app_lewis' });
+  ed._onInput({ dataset: { path: 'targets.1.tts_announce', kind: 'bool' }, checked: true });
   ed._onAction({ dataset: { action: 'add-target' } });
+  assert.strictEqual(ed._draft.targets.length, 3);
+  assert.strictEqual(ed._draft.targets[2].notify_title, '$icon Doorbell', 'defaults from backend');
+  ed._onAction({ dataset: { action: 'remove', path: 'targets.2' } });
   assert.strictEqual(ed._draft.targets.length, 2);
-  assert.strictEqual(ed._draft.targets[1].notify_title, '$icon Doorbell', 'defaults from backend');
-  ed._onAction({ dataset: { action: 'remove', path: 'targets.1' } });
-  assert.strictEqual(ed._draft.targets.length, 1);
 
   let savedEvent = false; ed.addEventListener('dialmatrix-saved', () => { savedEvent = true; });
   await ed.save();
@@ -152,6 +178,9 @@ assert(Card.getConfigElement() instanceof CardEditor, 'config element');
   assert.deepStrictEqual(saved.cameras[0].zones.dog, ['patio', 'yard']);
   assert.strictEqual(saved.frigate.mqtt, false);
   assert.deepStrictEqual(saved.targets[0].notify_data, { url: '/gate', priority: 'high' });
+  assert.strictEqual(saved.targets[1].tts_volume, 55); assert.strictEqual(saved.targets[1].tts_announce, true);
+  assert.deepStrictEqual(saved.targets[1].tts_media_player, ['media_player.kitchen', 'media_player.office']);
+  assert.strictEqual(saved.targets[0].notify_service, 'notify.mobile_app_lewis');
   assert(savedEvent && ed.shadowRoot.innerHTML.includes('Saved.'), 'saved event + notice');
 
   ed._hass = { ...hass, callWS: async (m) => { if (m.type === 'dialmatrix/config/save') throw { code: 'invalid_config', message: "duplicate id 'x'" }; return { config: stored, defaults }; } };
